@@ -1,0 +1,39 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.venv/
+env/
+
+# Node
+node_modules/
+dist/
+
+# Environment files
+.env
+*.env
+!.env.example
+!.env-template
+
+# Logs
+*.log
+log/
+logs/
+
+# Generated call reports (contain call transcripts/PII)
+reports/
+
+# Local plans and editor files
+.idea/
+.vscode/
+
+# Sensitive service/account files
+/*.json
+
+.claude/
