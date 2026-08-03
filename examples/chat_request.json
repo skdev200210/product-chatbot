@@ -1,0 +1,17 @@
+{
+  "conversation": [
+    {
+      "role": "user",
+      "content": "I need an outbound agent for Acme Widgets that calls customers whose card payment failed. It should tell them the payment didn't go through, ask them to update their card, and offer to send a secure payment link by SMS. If they say they'll do it later, book a callback. Don't discuss anything other than the failed payment. Friendly, quick, under two minutes."
+    }
+  ],
+  "payload": {
+    "input_variables": {
+      "customer_name": "First name of the person being called",
+      "company_name": "The business the agent is calling on behalf of",
+      "due_amount": "Outstanding amount, already formatted for speech, e.g. 'forty-nine dollars'",
+      "last_four": "Last four digits of the card that failed",
+      "retry_date": "Date the payment will be retried automatically"
+    }
+  }
+}
