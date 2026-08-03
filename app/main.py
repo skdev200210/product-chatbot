@@ -52,7 +52,7 @@ async def health() -> dict[str, str]:
 
 
 @app.post(
-    "/chat",
+    "/api/chat",
     response_model=ChatResponse,
     responses={
         422: {"model": ErrorResponse},
