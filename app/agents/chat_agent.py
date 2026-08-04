@@ -21,6 +21,8 @@ from app.core.prompt import output_variables, render
 from app.core.schemas import AgentTemplate, Message, Usage
 from app.core.system_prompt import SYSTEM_PROMPT_TEMPLATE
 from app.mcp_servers import build_toolsets
+from app.core.logger import logger
+
 
 #: Template fields that may carry ``{{variable}}`` markers. ``summary_prompt``
 #: is deliberately absent — it runs after the call, when variables are out of scope.
@@ -167,11 +169,21 @@ async def run_chat(
     conversation: Sequence[Message], payload: Mapping[str, Any]
 ) -> tuple[AgentTemplate, Usage]:
     """Run one turn: last user message is the prompt, everything before it is history."""
+    logger.info(
+        "running chat_agent with conversation of %d messages and payload: %s",
+        len(conversation),
+        payload,
+    )
     system_prompt, allowed_variables = build_system_prompt(payload)
     result = await chat_agent.run(
         conversation[-1].content,
         message_history=to_message_history(conversation[:-1]),
         deps=ChatDeps(system_prompt=system_prompt, allowed_variables=allowed_variables),
+    )
+
+    logger.info(
+        "chat_agent output: %s",
+        result.output.model_dump_json(indent=2, ensure_ascii=False),
     )
     return result.output, _to_usage(result)
 
