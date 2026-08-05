@@ -5,9 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "anthropic>=0.120.2",
     "fastapi>=0.115",
+    "httpx>=0.28.1",
     "pydantic>=2.9",
-    "pydantic-ai-slim[anthropic,mcp]>=2.0",
+    "pydantic-ai-slim[anthropic]>=2.23.0",
     "pydantic-settings>=2.6",
     "uvicorn[standard]>=0.32",
 ]

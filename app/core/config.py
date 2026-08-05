@@ -6,7 +6,6 @@ from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from app.core.models import MCPServerConfig
 
 
 class Settings(BaseSettings):
@@ -23,12 +22,9 @@ class Settings(BaseSettings):
         default="claude-sonnet-5",
         description="Claude model the agent runs on.",
     )
-    mcp_servers: list[MCPServerConfig] = Field(
-        default_factory=list,
-        description=(
-            "Remote MCP servers the agent may call, as a JSON list in MCP_SERVERS. "
-            "See MCPServerConfig in app/core/models.py for the entry shape."
-        ),
+    workflow_base_url: str = Field(
+        default="https://productv3workflow.markytics.ai",
+        description="Base URL of the workflow API the create_agent tool posts to.",
     )
     max_output_tokens: int = Field(
         default=8192,
@@ -38,7 +34,14 @@ class Settings(BaseSettings):
             "hitting it truncates the JSON mid-object."
         ),
     )
-    request_timeout_seconds: float = Field(default=60.0, gt=0)
+    request_timeout_seconds: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "A turn that writes a template and then calls create_agent runs two model "
+            "round trips and has been measured near 60s, so leave generous headroom."
+        ),
+    )
     max_conversation_messages: int = Field(default=50, gt=0)
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: ["*"],

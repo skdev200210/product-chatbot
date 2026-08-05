@@ -9,32 +9,29 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
-from app.agents.chat_agent import InvalidInputVariables, chat_agent, run_chat
+from app.agents.chat_agent import InvalidInputVariables, run_chat
 from app.core.config import get_settings
-from app.core.prompt import MissingPromptKeys, placeholders
-from app.core.schemas import ChatRequest, ChatResponse, ErrorResponse
-from app.core.system_prompt import SYSTEM_PROMPT_TEMPLATE
 from app.core.logger import logger
+from app.core.prompt import MissingPromptKeys, placeholders
+from app.core.schemas import AgentTemplate, ChatRequest, ChatResponse, ErrorResponse
+from app.core.system_prompt import SYSTEM_PROMPT_TEMPLATE
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings = get_settings()
     logger.info(
         "system prompt expects payload keys: %s",
         ", ".join(sorted(placeholders(SYSTEM_PROMPT_TEMPLATE))) or "none",
     )
-    # Entering the agent opens the MCP sessions once and keeps them for the
-    # lifetime of the process, instead of reconnecting on every request. If a
-    # configured server is unreachable, startup fails here rather than the app
-    # silently serving a model with no tools.
-    async with chat_agent:
-        yield
+    logger.info("workflow api: %s", settings.workflow_base_url)
+    yield
 
 
 app = FastAPI(
     title="Product Chatbot",
     version="0.1.0",
-    summary="Chat endpoint backed by a pydantic-ai agent with JSON-only output.",
+    summary="Chat endpoint that generates voice-agent templates as JSON.",
     lifespan=lifespan,
 )
 
@@ -52,7 +49,7 @@ async def health() -> dict[str, str]:
 
 
 @app.post(
-    "/api/chat",
+    "/agent-chatbot/api/chat",
     response_model=ChatResponse,
     responses={
         422: {"model": ErrorResponse},
@@ -73,7 +70,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
 
     try:
-        template, usage = await asyncio.wait_for(
+        output, usage = await asyncio.wait_for(
             run_chat(request.conversation, request.payload),
             timeout=settings.request_timeout_seconds,
         )
@@ -95,4 +92,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
             502, detail="the model did not return a valid response for the required schema"
         ) from exc
 
-    return ChatResponse(output=template, model=settings.model_name, usage=usage)
+    return ChatResponse(
+        kind="template" if isinstance(output, AgentTemplate) else "created",
+        output=output,
+        model=settings.model_name,
+        usage=usage,
+    )

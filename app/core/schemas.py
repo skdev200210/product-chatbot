@@ -23,14 +23,13 @@ class ChatRequest(BaseModel):
 
     conversation: list[Message] = Field(
         min_length=1,
-        description="Full conversation so far, oldest first. The last message must be from the user.",
+        description="Conversation so far, oldest first. The last message must be from the user.",
     )
     payload: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Arbitrary context injected into the prompt. `input_variables` is special: "
-            "it declares the {{variable}} markers the generated template may use, as "
-            "either a list of names or a mapping of name -> description."
+            "Context for the turn. `input_variables` declares the {{variables}} the template "
+            "may use; `agent_config` holds the ids the create tool needs."
         ),
     )
 
@@ -43,48 +42,27 @@ class ChatRequest(BaseModel):
 
 
 class AgentTemplate(BaseModel):
-    """The call-agent template the model is forced to produce.
-
-    This is the agent's output schema, so the response is always valid JSON.
-
-    Every field except ``summary_prompt`` may contain ``{{variable}}`` markers,
-    drawn only from the ``input_variables`` supplied in the request payload.
-    ``summary_prompt`` runs after the call, when those variables no longer mean
-    anything, so it must be plain text.
-    """
+    """The voice-agent template. Every field but `summary_prompt` may use {{variables}}."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # No `min_length` / `min_items` here on purpose: those render as `minLength`
-    # and `minItems`, which Anthropic's structured outputs reject. Emptiness is
-    # enforced by the output validator in app/agents/chat_agent.py instead.
-    start_message: str = Field(
-        description=(
-            "The first thing the agent says when the call connects. One or two "
-            "spoken sentences."
-        ),
-    )
-    end_message: str = Field(
-        description="What the agent says to close the call, once the objective is met or refused.",
-    )
-    objective: str = Field(
-        description="What the agent must achieve on the call, stated as an outcome.",
-    )
-    instructions: str = Field(
-        description=(
-            "How the agent should behave: tone, pacing, how to handle the "
-            "expected turns of the conversation."
-        ),
-    )
-    rules: list[str] = Field(
-        description="Hard constraints — do's and don'ts. One rule per item, imperative.",
-    )
+    start_message: str = Field(description="The first thing the agent says when the call connects.")
+    end_message: str = Field(description="What the agent says to close the call.")
+    objective: str = Field(description="What the agent must achieve, as an outcome.")
+    instructions: str = Field(description="How the agent behaves: tone, pacing, handling the call.")
+    rules: list[str] = Field(description="Hard constraints. One imperative sentence per item.")
     summary_prompt: str = Field(
-        description=(
-            "A prompt used after the call to summarise the transcript. "
-            "Plain text only — no {{variable}} markers."
-        ),
+        description="Prompt used after the call to summarise it. Plain text, no variables."
     )
+
+
+class AgentCreated(BaseModel):
+    """Returned instead of a template on a turn where the agent was actually created."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_name: str = Field(description="Name of the agent that was created.")
+    message: str = Field(description="One sentence for the user confirming what was created.")
 
 
 class Usage(BaseModel):
@@ -93,7 +71,10 @@ class Usage(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    output: AgentTemplate
+    """`kind` tells the client which shape `output` is, without inspecting fields."""
+
+    kind: Literal["template", "created"]
+    output: AgentTemplate | AgentCreated
     model: str
     usage: Usage
 
