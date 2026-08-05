@@ -227,7 +227,7 @@ async def run_chat(
             ),
         ),
         model_settings={"max_tokens": get_settings().max_output_tokens},
-        retries=2,
+        retries=0,
         name="template-generator",
     )
 
