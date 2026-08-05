@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import httpx
-from pydantic_ai import Agent, NativeOutput, RunContext
+from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -29,19 +29,60 @@ from app.core.prompt import render
 from app.core.schemas import AgentCreated, AgentTemplate, Message, Usage
 from app.core.system_prompt import SYSTEM_PROMPT_TEMPLATE
 
-ChatOutput = AgentTemplate | AgentCreated
-
 
 class InvalidInputVariables(Exception):
     """`payload["input_variables"]` was not a list of names or a name -> description map."""
 
 
-@dataclass(frozen=True)
+# The model sometimes stubs the long prose fields when filling in the tool call —
+# `"instructions": "placeholder"` — and that text is what the created agent runs on.
+# Catch it here so a stub is never posted to the workflow API.
+_STUB_VALUES = frozenset(
+    {
+        "placeholder",
+        "todo",
+        "tbd",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "string",
+        "text",
+        "text here",
+        "same as above",
+        "as above",
+        "see above",
+        "unchanged",
+        "...",
+    }
+)
+
+# A floor low enough that no genuinely written field trips it; "placeholder" is 11 chars.
+_MIN_FIELD_LENGTH = 25
+
+
+def _stub_fields(template: AgentTemplate) -> list[str]:
+    """Names of template fields that were left as a stub rather than actually written."""
+    stubs = []
+    for name in ("start_message", "end_message", "objective", "instructions", "summary_prompt"):
+        value = getattr(template, name).strip()
+        if value.strip("<>[[]().").lower() in _STUB_VALUES or len(value) < _MIN_FIELD_LENGTH:
+            stubs.append(name)
+    if not template.rules or any(
+        rule.strip().strip("<>[[]().").lower() in _STUB_VALUES for rule in template.rules
+    ):
+        stubs.append("rules")
+    return stubs
+
+
+@dataclass
 class ChatDeps:
     """Per-request context. `agent_config` never reaches the model."""
 
     system_prompt: str
     agent_config: Mapping[str, Any]
+    # Set by create_agent on success, so a created turn can still return its template.
+    created_template: AgentTemplate | None = None
 
 
 chat_agent = Agent(
@@ -74,8 +115,21 @@ async def create_agent(ctx: RunContext[ChatDeps], template: AgentTemplate) -> di
     """Create the voice agent from a template.
 
     Call this when the user asks for the agent to be created, saved, or deployed.
-    Pass the finished template; the account settings come from the request.
+    Pass the finished template written out in full — every field word for word, exactly
+    as you would return it to the user. This text is what the created agent runs on, so
+    an abbreviated or stubbed field is stored and used verbatim. The account settings
+    come from the request.
     """
+    stubs = _stub_fields(template)
+    if stubs:
+        logger.warning("create_agent called with stubbed field(s): %s", ", ".join(stubs))
+        raise ModelRetry(
+            f"These fields were not written out: {', '.join(stubs)}. "
+            "The template you pass is stored verbatim and becomes what the agent says and "
+            "does on the call — a stub like 'placeholder' or 'TBD' would ship to production. "
+            "Call create_agent again with every field written out in full."
+        )
+
     config = ctx.deps.agent_config
     if not config:
         logger.warning("create_agent called but payload.agent_config was empty")
@@ -153,6 +207,7 @@ async def create_agent(ctx: RunContext[ChatDeps], template: AgentTemplate) -> di
         return {"error": f"could not reach the workflow API: {exc}"}
 
     logger.info("created agent %r", config.get("agent_name"))
+    ctx.deps.created_template = template
     return {"message": "Agent created successfully", "agent_name": config.get("agent_name")}
 
 
@@ -203,21 +258,26 @@ def to_message_history(messages: Sequence[Message]) -> list[ModelMessage]:
 
 async def run_chat(
     conversation: Sequence[Message], payload: Mapping[str, Any]
-) -> tuple[ChatOutput, Usage]:
-    """Run one turn: last user message is the prompt, everything before it is history."""
+) -> tuple[AgentTemplate | None, AgentCreated | None, Usage]:
+    """Run one turn: last user message is the prompt, everything before it is history.
+
+    Returns the template for the turn and, when the agent was actually created, the
+    creation result alongside it — a created turn keeps the template it was built from.
+    """
     logger.info(
         "turn: %d message(s), payload keys=%s, agent_name=%s",
         len(conversation),
         sorted(payload),
         payload.get("agent_name"),
     )
+    deps = ChatDeps(
+        system_prompt=build_system_prompt(payload),
+        agent_config=payload,
+    )
     result = await chat_agent.run(
         conversation[-1].content,
         message_history=to_message_history(conversation[:-1]),
-        deps=ChatDeps(
-            system_prompt=build_system_prompt(payload),
-            agent_config=payload,
-        ),
+        deps=deps,
     )
 
     tools_called = [
@@ -228,10 +288,21 @@ async def run_chat(
     ]
     logger.info("turn produced %s, tools called=%s", type(result.output).__name__, tools_called or "none")
 
+    output = result.output
+    if isinstance(output, AgentTemplate):
+        template, created = output, None
+    else:
+        # The model only returns AgentCreated after create_agent ran, so the template it
+        # was created from is the one the tool captured.
+        created = output
+        template = deps.created_template
+        if template is None:
+            logger.warning("turn returned AgentCreated but no template was captured")
+
     usage = result.usage
     if callable(usage):  # property in current pydantic-ai, method in older releases
         usage = usage()
-    return result.output, Usage(
+    return template, created, Usage(
         input_tokens=getattr(usage, "input_tokens", 0) or 0,
         output_tokens=getattr(usage, "output_tokens", 0) or 0,
     )

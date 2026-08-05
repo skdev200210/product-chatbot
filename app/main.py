@@ -13,7 +13,7 @@ from app.agents.chat_agent import InvalidInputVariables, run_chat
 from app.core.config import get_settings
 from app.core.logger import logger
 from app.core.prompt import MissingPromptKeys, placeholders
-from app.core.schemas import AgentTemplate, ChatRequest, ChatResponse, ErrorResponse
+from app.core.schemas import ChatRequest, ChatResponse, ErrorResponse
 from app.core.system_prompt import SYSTEM_PROMPT_TEMPLATE
 
 
@@ -70,7 +70,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
 
     try:
-        output, usage = await asyncio.wait_for(
+        template, created, usage = await asyncio.wait_for(
             run_chat(request.conversation, request.payload),
             timeout=settings.request_timeout_seconds,
         )
@@ -93,8 +93,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         ) from exc
 
     return ChatResponse(
-        kind="template" if isinstance(output, AgentTemplate) else "created",
-        output=output,
+        template=template,
+        created=created,
         model=settings.model_name,
         usage=usage,
     )

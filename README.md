@@ -58,15 +58,34 @@ Response:
 
 ```json
 {
-  "output": {
-    "reply": "Pro is $49 a month.",
-    "intent": "pricing_question",
-    "confidence": 0.95,
-    "suggested_replies": ["What's included in Pro?", "Can I switch plans?"],
-    "requires_human": false
+  "template": {
+    "start_message": "Hi {{customer_name}}, this is Acme calling about your Pro plan.",
+    "end_message": "Thanks for your time — have a good day.",
+    "objective": "Confirm the customer wants to stay on Pro.",
+    "instructions": "Be brief and warm. Let the customer finish speaking.",
+    "rules": ["Never quote a price other than $49/month."],
+    "summary_prompt": "Summarise the call and whether the customer renewed."
   },
+  "created": null,
   "model": "claude-sonnet-5",
   "usage": { "input_tokens": 412, "output_tokens": 63 }
+}
+```
+
+`template` is present on every turn. On the turn where the agent is actually
+created, `created` holds the confirmation and `template` still carries the
+template that was sent to the workflow API — so the client renders the same view
+for both cases, and `created !== null` is the only check it needs:
+
+```json
+{
+  "template": { "...": "the template the agent was created from" },
+  "created": {
+    "agent_name": "acme-renewals",
+    "message": "Created the acme-renewals agent."
+  },
+  "model": "claude-sonnet-5",
+  "usage": { "input_tokens": 980, "output_tokens": 120 }
 }
 ```
 

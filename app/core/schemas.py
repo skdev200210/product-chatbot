@@ -71,10 +71,14 @@ class Usage(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """`kind` tells the client which shape `output` is, without inspecting fields."""
+    """`template` is the template for the turn; `created` is set only when the agent was saved.
 
-    kind: Literal["template", "created"]
-    output: AgentTemplate | AgentCreated
+    On a turn that created the agent, `template` still holds the template that was sent
+    to the workflow API, so the client renders it the same way either way.
+    """
+
+    template: AgentTemplate | None = None
+    created: AgentCreated | None = None
     model: str
     usage: Usage
 
