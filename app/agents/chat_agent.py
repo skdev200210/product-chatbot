@@ -109,7 +109,7 @@ async def create_agent(ctx: RunContext[ChatDeps], template: AgentTemplate) -> di
                 "client_id": int(config.get("client_id")),
                 "product_id": int(config.get("product_id")),
                 "channel_id": int(config.get("channel_id")),
-                "parent_agent_id": 0,
+                "parent_agent_id": None,
                 "input_file_id": int(config.get("input_file_id")),
                 "start_msg": template.start_message,
                 "end_msg": template.end_message,
