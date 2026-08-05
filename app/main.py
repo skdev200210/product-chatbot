@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 
 from app.agents.chat_agent import InvalidInputVariables, run_chat
+from app.core import context_store
 from app.core.config import get_settings
 from app.core.logger import logger
 from app.core.prompt import MissingPromptKeys, placeholders
@@ -25,7 +26,19 @@ async def lifespan(app: FastAPI):
         ", ".join(sorted(placeholders(SYSTEM_PROMPT_TEMPLATE))) or "none",
     )
     logger.info("workflow api: %s", settings.workflow_base_url)
-    yield
+    logger.info("mcp server: %s", settings.mcp_server_url)
+
+    try:
+        await context_store.connect()
+    except Exception:
+        # Not fatal: create_agent falls back to the inline payload argument while the
+        # MCP server still accepts it. Make this fatal once that fallback is removed.
+        logger.exception("redis unavailable at startup, create_agent will use the fallback")
+
+    try:
+        yield
+    finally:
+        await context_store.close()
 
 
 app = FastAPI(

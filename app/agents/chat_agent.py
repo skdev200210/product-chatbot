@@ -29,6 +29,7 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.capabilities import MCP
 
+from app.core import context_store
 from app.core.config import get_settings
 from app.core.logger import logger
 from app.core.prompt import render
@@ -89,9 +90,11 @@ class ChatDeps:
 
     system_prompt: str
     agent_config: Mapping[str, Any]
+    # Names this turn's slot in Redis, and travels to the MCP server as a header.
+    context_id: str
     # Set by create_agent on success, so a created turn can still return its template.
     created_template: AgentTemplate | None = None
-    
+
 
 async def inject_agent_config(
     ctx: RunContext[ChatDeps],
@@ -99,20 +102,24 @@ async def inject_agent_config(
     name: str,
     args: dict[str, Any],
 ) -> Any:
-    """Fill the MCP tool's `payload` argument from the request, not from the model.
+    """Hand the request's config to the MCP server out of band, not through the model.
 
-    The remote `create_agent` takes `payload` (client_id, product_id, llm_id, ...) as a
-    required argument, but `agent_config` deliberately never reaches the model, so the
-    model can only send `{}`. Substituting it here keeps the ids out of the prompt and
-    out of reach of a mistyped or invented value.
+    The remote `create_agent` needs the config ids (client_id, product_id, llm_id, ...)
+    but `agent_config` deliberately never reaches the model, so the model cannot supply
+    them. They go into Redis under this turn's context id, which the server already has
+    from the request header — keeping the ids out of the prompt and out of reach of a
+    mistyped or invented value.
+
+    The write happens here rather than at the top of the turn because most turns only
+    write a template and call no tool at all; there is nothing to store until the tool
+    actually fires. Writing before `call_tool` means the key is always in place by the
+    time the server looks for it.
     """
     if name == "create_agent":
         config = ctx.deps.agent_config
         if not config:
             logger.warning("create_agent called but payload.agent_config was empty")
             return {"error": "No agent_config was supplied with this request, so nothing can be created."}
-        args = {**args, "payload": dict(config)}
-        logger.info("create_agent payload injected for %r", config.get("agent_name"))
 
         # The response keeps the template a created agent was built from, and the tool
         # arguments are the only place it exists — the model returns AgentCreated instead.
@@ -122,6 +129,15 @@ async def inject_agent_config(
             )
         except ValidationError as exc:
             logger.warning("could not capture template from create_agent args: %s", exc)
+
+        try:
+            await context_store.put(ctx.deps.context_id, config)
+            logger.info("create_agent context stored for %r", config.get("agent_name"))
+        except Exception:
+            # Redis being down should not fail the turn while the server still accepts
+            # the inline argument. Drop this fallback once the server reads only Redis.
+            logger.exception("could not store mcp context, falling back to inline payload")
+            args = {**args, "payload": dict(config)}
 
     result = await call_tool(name, args)
     logger.info("%s returned: %s", name, str(result)[:400])
@@ -193,6 +209,7 @@ async def run_chat(
     deps = ChatDeps(
         system_prompt=build_system_prompt(payload),
         agent_config=payload,
+        context_id=context_id,
     )
 
     chat_agent = Agent(
@@ -210,14 +227,16 @@ async def run_chat(
             ),
         ),
         model_settings={"max_tokens": get_settings().max_output_tokens},
-        retries=2,
+        retries=0,
         name="template-generator",
     )
 
+    # Built per turn so the header carries this turn's id; the server reads the config
+    # from Redis under it when create_agent runs.
     mcp_client = Client(
         StreamableHttpTransport(
-            "https://markytics-mcp-server.markytics.ai/mcp",
-            headers={"X-Context-ID": context_id} # Or pass it as a query param in the URL
+            get_settings().mcp_server_url,
+            headers={"X-Context-ID": context_id},
         )
     )
     turn_toolset = MCPToolset(mcp_client, process_tool_call=inject_agent_config)

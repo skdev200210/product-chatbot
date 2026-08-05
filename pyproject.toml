@@ -11,6 +11,7 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-ai-slim[anthropic]>=2.23.0",
     "pydantic-settings>=2.6",
+    "redis[hiredis]>=5.2",
     "uvicorn[standard]>=0.32",
 ]
 

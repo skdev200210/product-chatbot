@@ -43,6 +43,24 @@ class Settings(BaseSettings):
         ),
     )
     max_conversation_messages: int = Field(default=50, gt=0)
+
+    mcp_server_url: str = Field(
+        default="https://markytics-mcp-server.markytics.ai/mcp",
+        description="Remote MCP server the create_agent tool lives on.",
+    )
+    redis_url: str = Field(
+        description=(
+            "Redis holding each turn's MCP context. The remote MCP server reads the same "
+            "keys, so both deployments must point at this instance."
+        ),
+    )
+    mcp_context_ttl_seconds: int = Field(
+        gt=0,
+        description=(
+            "How long one turn's MCP context lives. Must outlast a whole turn including "
+            "retries — REQUEST_TIMEOUT_SECONDS is 180, so this leaves headroom."
+        ),
+    )
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: ["*"],
         description='Comma-separated in env, e.g. CORS_ALLOW_ORIGINS=["https://app.example.com"]',
