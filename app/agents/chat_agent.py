@@ -11,7 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from fastmcp.client import Client
+from fastmcp.client.transports import StreamableHttpTransport
+from pydantic_ai.mcp import MCPToolset
+
 import httpx
+from pydantic import ValidationError
 from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
 from pydantic_ai.messages import (
     ModelMessage,
@@ -22,12 +27,15 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.capabilities import MCP
 
 from app.core.config import get_settings
 from app.core.logger import logger
 from app.core.prompt import render
 from app.core.schemas import AgentCreated, AgentTemplate, Message, Usage
 from app.core.system_prompt import SYSTEM_PROMPT_TEMPLATE
+
+import uuid
 
 
 class InvalidInputVariables(Exception):
@@ -83,132 +91,41 @@ class ChatDeps:
     agent_config: Mapping[str, Any]
     # Set by create_agent on success, so a created turn can still return its template.
     created_template: AgentTemplate | None = None
+    
 
+async def inject_agent_config(
+    ctx: RunContext[ChatDeps],
+    call_tool: Any,
+    name: str,
+    args: dict[str, Any],
+) -> Any:
+    """Fill the MCP tool's `payload` argument from the request, not from the model.
 
-chat_agent = Agent(
-    AnthropicModel(
-        get_settings().model_name,
-        provider=AnthropicProvider(api_key=get_settings().anthropic_api_key),
-    ),
-    deps_type=ChatDeps,
-    output_type=NativeOutput(
-        [AgentTemplate, AgentCreated],
-        name="chat_turn",
-        description=(
-            "AgentTemplate when writing or revising a template. "
-            "AgentCreated only after create_agent has actually run."
-        ),
-    ),
-    model_settings={"max_tokens": get_settings().max_output_tokens},
-    retries=2,
-    name="template-generator",
-)
-
-
-@chat_agent.instructions
-def _system_prompt(ctx: RunContext[ChatDeps]) -> str:
-    return ctx.deps.system_prompt
-
-
-@chat_agent.tool
-async def create_agent(ctx: RunContext[ChatDeps], template: AgentTemplate) -> dict[str, Any]:
-    """Create the voice agent from a template.
-
-    Call this when the user asks for the agent to be created, saved, or deployed.
-    Pass the finished template written out in full — every field word for word, exactly
-    as you would return it to the user. This text is what the created agent runs on, so
-    an abbreviated or stubbed field is stored and used verbatim. The account settings
-    come from the request.
+    The remote `create_agent` takes `payload` (client_id, product_id, llm_id, ...) as a
+    required argument, but `agent_config` deliberately never reaches the model, so the
+    model can only send `{}`. Substituting it here keeps the ids out of the prompt and
+    out of reach of a mistyped or invented value.
     """
-    stubs = _stub_fields(template)
-    if stubs:
-        logger.warning("create_agent called with stubbed field(s): %s", ", ".join(stubs))
-        raise ModelRetry(
-            f"These fields were not written out: {', '.join(stubs)}. "
-            "The template you pass is stored verbatim and becomes what the agent says and "
-            "does on the call — a stub like 'placeholder' or 'TBD' would ship to production. "
-            "Call create_agent again with every field written out in full."
-        )
+    if name == "create_agent":
+        config = ctx.deps.agent_config
+        if not config:
+            logger.warning("create_agent called but payload.agent_config was empty")
+            return {"error": "No agent_config was supplied with this request, so nothing can be created."}
+        args = {**args, "payload": dict(config)}
+        logger.info("create_agent payload injected for %r", config.get("agent_name"))
 
-    config = ctx.deps.agent_config
-    if not config:
-        logger.warning("create_agent called but payload.agent_config was empty")
-        return {"error": "No agent_config was supplied with this request, so nothing can be created."}
-
-    base = get_settings().workflow_base_url
-    logger.info("creating agent %r", config.get("agent_name"))
-
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            master_payload = {
-                "agent_name": config.get("agent_name"),
-                "client_id": int(config.get("client_id")),
-                "product_id": int(config.get("product_id")),
-                "channel_id": int(config.get("channel_id")),
-            }
-            logger.info("create_agent master payload: %s", master_payload)
-            master = await client.post(
-                f"{base}/api/v1/agent-master",
-                json=master_payload,
+        # The response keeps the template a created agent was built from, and the tool
+        # arguments are the only place it exists — the model returns AgentCreated instead.
+        try:
+            ctx.deps.created_template = AgentTemplate.model_validate(
+                {k: v for k, v in args.items() if k != "payload"}
             )
+        except ValidationError as exc:
+            logger.warning("could not capture template from create_agent args: %s", exc)
 
-            logger.info("create_agent master response: %s %s", master.status_code, master.text)
-
-            master.raise_for_status()
-            master_id = master.json().get("agent_id")
-
-            master_agent_payload = {
-                "agent_name": config.get("agent_name"),
-                "agent_master_id": int(master_id),
-                "client_id": int(config.get("client_id")),
-                "product_id": int(config.get("product_id")),
-                "channel_id": int(config.get("channel_id")),
-                "parent_agent_id": None,
-                "input_file_id": int(config.get("input_file_id")),
-                "start_msg": template.start_message,
-                "end_msg": template.end_message,
-                "instructions": template.instructions,
-                "rules": "\n".join(template.rules),
-                "objectives": template.objective,
-                "summary_prompt": template.summary_prompt,
-                "is_global_agent": False,
-                "languages_supported": [int(lang) for lang in config.get("languages_supported", [])],
-                "language_names": config.get("languages"),
-                # "language_id": 0,
-                # "language_name": "string",
-                "llm_id": int(config.get("llm_id")),
-                "stt_id": int(config.get("stt_id")),
-                "tts_id": int(config.get("tts_id")),
-                "llm_name": config.get("llm_name"),
-                "stt_name": config.get("stt_name"),
-                "tts_name": config.get("tts_name"),
-                "voice": config.get("voice"),
-                "channel_type": "AI_CALL",
-                "use_calling_config_defaults": False,
-                "expected_input_columns": config.get("expected_input_columns"),
-                "expected_output_columns": config.get("expected_output_columns"),
-                "is_start_template": True,
-            }
-            logger.info("create_agent created payload: %s", master_agent_payload)
-
-            created = await client.post(
-                f"{base}/api/v1/agents",
-                json=master_agent_payload,
-            )
-
-            logger.info("create_agent created response: %s %s", created.status_code, created.text)
-            created.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        # Hand the failure to the model so it tells the user instead of claiming success.
-        logger.error("create_agent failed: %s %s", exc.response.status_code, exc.response.text)
-        return {"error": f"{exc.response.status_code}: {exc.response.text[:400]}"}
-    except httpx.HTTPError as exc:
-        logger.error("create_agent could not reach %s: %s", base, exc)
-        return {"error": f"could not reach the workflow API: {exc}"}
-
-    logger.info("created agent %r", config.get("agent_name"))
-    ctx.deps.created_template = template
-    return {"message": "Agent created successfully", "agent_name": config.get("agent_name")}
+    result = await call_tool(name, args)
+    logger.info("%s returned: %s", name, str(result)[:400])
+    return result
 
 
 def parse_input_variables(payload: Mapping[str, Any]) -> dict[str, str]:
@@ -270,14 +187,50 @@ async def run_chat(
         sorted(payload),
         payload.get("agent_name"),
     )
+    context_id = str(uuid.uuid4())
+    logger.info("turn context_id=%s", context_id)
+
     deps = ChatDeps(
         system_prompt=build_system_prompt(payload),
         agent_config=payload,
     )
+
+    chat_agent = Agent(
+        AnthropicModel(
+            get_settings().model_name,
+            provider=AnthropicProvider(api_key=get_settings().anthropic_api_key),
+        ),
+        deps_type=ChatDeps,
+        output_type=NativeOutput(
+            [AgentTemplate, AgentCreated],
+            name="chat_turn",
+            description=(
+                "AgentTemplate when writing or revising a template. "
+                "AgentCreated only after create_agent has actually run."
+            ),
+        ),
+        model_settings={"max_tokens": get_settings().max_output_tokens},
+        retries=2,
+        name="template-generator",
+    )
+
+    mcp_client = Client(
+        StreamableHttpTransport(
+            "https://markytics-mcp-server.markytics.ai/mcp",
+            headers={"X-Context-ID": context_id} # Or pass it as a query param in the URL
+        )
+    )
+    turn_toolset = MCPToolset(mcp_client, process_tool_call=inject_agent_config)
+
+    @chat_agent.instructions
+    def _system_prompt(ctx: RunContext[ChatDeps]) -> str:
+        return ctx.deps.system_prompt
+
     result = await chat_agent.run(
         conversation[-1].content,
         message_history=to_message_history(conversation[:-1]),
         deps=deps,
+        toolsets=[turn_toolset],
     )
 
     tools_called = [
